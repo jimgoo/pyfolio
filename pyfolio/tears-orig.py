@@ -203,8 +203,6 @@ def create_full_tear_sheet(returns,
                                    set_context=set_context)
 
 
-    
-
 @plotting_context
 def create_returns_tear_sheet(returns, live_start_date=None,
                               cone_std=(1.0, 1.5, 2.0),
@@ -1007,47 +1005,3 @@ def create_bayesian_tear_sheet(returns, benchmark_rets=None,
     plt.show()
     if return_fig:
         return fig
-
-    
-def get_round_trips(returns,
-                    positions=None,
-                    transactions=None,
-                    benchmark_rets=None,
-                    gross_lev=None,
-                    slippage=None,
-                    unadjusted_returns=None):
-    """
-    Return just the DataFrame of round trips.
-    """
-    
-    if benchmark_rets is None:
-        benchmark_rets = utils.get_symbol_rets('SPY')
-
-    # If the strategy's history is longer than the benchmark's, limit strategy
-    if returns.index[0] < benchmark_rets.index[0]:
-        returns = returns[returns.index > benchmark_rets.index[0]]
-
-    if (unadjusted_returns is None) and (slippage is not None) and\
-       (transactions is not None):
-        turnover = txn.get_turnover(positions, transactions,
-                                    period=None, average=False)
-        unadjusted_returns = returns.copy()
-        returns = txn.adjust_returns_for_slippage(returns, turnover, slippage)
-
-
-    transactions_closed = round_trips.add_closing_transactions(positions,
-                                                               transactions)
-    # extract_round_trips requires BoD portfolio_value
-    trades = round_trips.extract_round_trips(
-        transactions_closed,
-        portfolio_value=positions.sum(axis='columns') / (1 + returns)
-    )
-
-    if len(trades) < 5:
-        warnings.warn(
-            """Fewer than 5 round-trip trades made.
-               Skipping round trip tearsheet.""", UserWarning)
-        return
-
-    #round_trips.print_round_trip_stats(trades)
-    return trades
