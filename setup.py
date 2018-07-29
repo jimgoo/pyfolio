@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import sys
 from setuptools import setup
 
 import versioneer
@@ -23,7 +24,7 @@ AUTHOR = 'Quantopian Inc'
 AUTHOR_EMAIL = 'opensource@quantopian.com'
 URL = "https://github.com/quantopian/pyfolio"
 LICENSE = "Apache License, Version 2.0"
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 classifiers = ['Development Status :: 4 - Beta',
                'Programming Language :: Python',
@@ -31,31 +32,38 @@ classifiers = ['Development Status :: 4 - Beta',
                'Programming Language :: Python :: 3',
                'Programming Language :: Python :: 2.7',
                'Programming Language :: Python :: 3.4',
+               'Programming Language :: Python :: 3.5',
                'License :: OSI Approved :: Apache Software License',
                'Intended Audience :: Science/Research',
                'Topic :: Scientific/Engineering',
                'Topic :: Scientific/Engineering :: Mathematics',
                'Operating System :: OS Independent']
 
+if (sys.version_info.major, sys.version_info.minor) >= (3, 3):
+    support_ipython_6 = True
+else:
+    support_ipython_6 = False
+
 install_reqs = [
-    'funcsigs>=0.4',
+    'ipython>=3.2.3' if support_ipython_6 else 'ipython>=3.2.3, <6',
     'matplotlib>=1.4.0',
-    'mock>=1.1.2',
     'numpy>=1.9.1',
-    'pandas>=0.18.0',
-    'pyparsing>=2.0.3',
-    'python-dateutil>=2.4.2',
+    'pandas>=0.19.0',
     'pytz>=2014.10',
     'scipy>=0.14.0',
-    'seaborn>=0.6.0',
+    'seaborn>=0.7.1',
     'pandas-datareader>=0.2',
+    'empyrical>=0.3.0'
 ]
 
-extras_reqs = {
-    'bayesian': ['pymc3']
-}
-
 test_reqs = ['nose>=1.3.7', 'nose-parameterized>=0.5.0', 'runipy>=0.1.3']
+bayesian_reqs = ['pymc3 >= 3.1']
+
+extras_reqs = {
+    'bayesian': bayesian_reqs,
+    'test': test_reqs,
+    'all': test_reqs + bayesian_reqs,
+}
 
 if __name__ == "__main__":
     setup(
@@ -72,7 +80,7 @@ if __name__ == "__main__":
         package_data={'pyfolio': ['data/*.*']},
         classifiers=classifiers,
         install_requires=install_reqs,
-        extras_requires=extras_reqs,
+        extras_require=extras_reqs,
         tests_require=test_reqs,
         test_suite='nose.collector',
     )

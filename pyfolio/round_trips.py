@@ -20,7 +20,7 @@ from collections import deque, OrderedDict
 import pandas as pd
 import numpy as np
 
-from .utils import print_table, APPROX_BDAYS_PER_MONTH
+from .utils import print_table, format_asset
 
 PNL_STATS = OrderedDict(
     [('Total profit', lambda x: x.sum()),
@@ -59,10 +59,17 @@ RETURN_STATS = OrderedDict(
 DURATION_STATS = OrderedDict(
     [('Avg duration', lambda x: x.mean()),
      ('Median duration', lambda x: x.median()),
-     ('Avg # round_trips per day', lambda x: float(len(x)) /
-      (x.max() - x.min()).days),
-     ('Avg # round_trips per month', lambda x: float(len(x)) /
-      (((x.max() - x.min()).days) / APPROX_BDAYS_PER_MONTH)),
+     ('Longest duration', lambda x: x.max()),
+     ('Shortest duration', lambda x: x.min())
+     #  FIXME: Instead of x.max() - x.min() this should be
+     #  rts.close_dt.max() - rts.open_dt.min() which is not
+     #  available here. As it would require a new approach here
+     #  that passes in multiple fields we disable these measures
+     #  for now.
+     #  ('Avg # round_trips per day', lambda x: float(len(x)) /
+     #   (x.max() - x.min()).days),
+     #  ('Avg # round_trips per month', lambda x: float(len(x)) /
+     #   (((x.max() - x.min()).days) / APPROX_BDAYS_PER_MONTH)),
      ])
 
 
@@ -123,11 +130,11 @@ def _groupby_consecutive(txn, max_delta=pd.Timedelta('8h')):
             1) != t.order_sign).astype(int).cumsum()
         t['block_time'] = ((t.dt - t.dt.shift(1)) >
                            max_delta).astype(int).cumsum()
-        grouped_price = t.groupby(['block_dir',
-                                   'block_time'])[['price', 'amount']]\
-                         .apply(vwap)
+        grouped_price = (t.groupby(('block_dir',
+                                   'block_time'))
+                          .apply(vwap))
         grouped_price.name = 'price'
-        grouped_rest = t.groupby(['block_dir', 'block_time']).agg({
+        grouped_rest = t.groupby(('block_dir', 'block_time')).agg({
             'amount': 'sum',
             'symbol': 'first',
             'dt': 'first'})
@@ -252,13 +259,13 @@ def extract_round_trips(transactions,
         pv = pd.DataFrame(portfolio_value,
                           columns=['portfolio_value'])\
             .assign(date=portfolio_value.index)
+
         roundtrips['date'] = roundtrips.close_dt.apply(lambda x:
                                                        x.replace(hour=0,
                                                                  minute=0,
                                                                  second=0))
 
-        tmp = roundtrips.assign(date=roundtrips.close_dt)\
-                        .join(pv, on='date', lsuffix='_')
+        tmp = roundtrips.join(pv, on='date', lsuffix='_')
 
         roundtrips['returns'] = tmp.pnl / tmp.portfolio_value
         roundtrips = roundtrips.drop('date', axis='columns')
@@ -399,5 +406,6 @@ def print_round_trip_stats(round_trips, hide_pos=False):
                 name='Return stats')
 
     if not hide_pos:
+        stats['symbols'].columns = stats['symbols'].columns.map(format_asset)
         print_table(stats['symbols'] * 100,
                     fmt='{:.2f}%', name='Symbol stats')

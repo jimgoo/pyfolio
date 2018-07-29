@@ -30,15 +30,19 @@ from . import txn
 from . import round_trips
 from . import capacity
 from . import plotting
+from . import risk
 from . import _seaborn as sns
 from .plotting import plotting_context
+import empyrical
 
 try:
     from . import bayesian
+    have_bayesian = True
 except ImportError:
     warnings.warn(
         "Could not import bayesian submodule due to missing pymc3 dependency.",
         ImportWarning)
+    have_bayesian = False
 
 
 def timer(msg_body, previous_time):
@@ -55,16 +59,23 @@ def create_full_tear_sheet(returns,
                            transactions=None,
                            market_data=None,
                            benchmark_rets=None,
-                           gross_lev=None,
                            slippage=None,
                            live_start_date=None,
                            sector_mappings=None,
                            bayesian=False,
                            round_trips=False,
+                           estimate_intraday='infer',
                            hide_positions=False,
                            cone_std=(1.0, 1.5, 2.0),
                            bootstrap=False,
                            unadjusted_returns=None,
+                           risk=False,
+                           style_factor_panel=None,
+                           sectors=None,
+                           caps=None,
+                           shares_held=None,
+                           volumes=None,
+                           percentile=None,
                            set_context=True):
     """
     Generate a number of tear sheets that are useful
@@ -109,15 +120,6 @@ def create_full_tear_sheet(returns,
         Panel with items axis of 'price' and 'volume' DataFrames.
         The major and minor axes should match those of the
         the passed positions DataFrame (same dates and symbols).
-    gross_lev : pd.Series, optional
-        The leverage of a strategy.
-         - Time series of the sum of long and short exposure per share
-            divided by net asset value.
-         - Example:
-            2009-12-04    0.999932
-            2009-12-07    0.999783
-            2009-12-08    0.999880
-            2009-12-09    1.000283
     slippage : int/float, optional
         Basis points of slippage to apply to returns before generating
         tearsheet stats and plots.
@@ -134,6 +136,15 @@ def create_full_tear_sheet(returns,
         If True, causes the generation of a Bayesian tear sheet.
     round_trips: boolean, optional
         If True, causes the generation of a round trip tear sheet.
+    sector_mappings : dict or pd.Series, optional
+        Security identifier to sector mapping.
+        Security ids as keys, sectors as values.
+    estimate_intraday: boolean or str, optional
+        Instead of using the end-of-day positions, use the point in the day
+        where we have the most $ invested. This will adjust positions to
+        better approximate and represent how an intraday strategy behaves.
+        By default, this is 'infer', and an attempt will be made to detect
+        an intraday strategy. Specifying this value will prevent detection.
     cone_std : float, or tuple, optional
         If float, The standard deviation to use for the cone plots.
         If tuple, Tuple of standard deviation values to use for the cone plots
@@ -150,10 +161,6 @@ def create_full_tear_sheet(returns,
     if benchmark_rets is None:
         benchmark_rets = utils.get_symbol_rets('SPY')
 
-    # If the strategy's history is longer than the benchmark's, limit strategy
-    if returns.index[0] < benchmark_rets.index[0]:
-        returns = returns[returns.index > benchmark_rets.index[0]]
-
     if (unadjusted_returns is None) and (slippage is not None) and\
        (transactions is not None):
         turnover = txn.get_turnover(positions, transactions,
@@ -161,8 +168,13 @@ def create_full_tear_sheet(returns,
         unadjusted_returns = returns.copy()
         returns = txn.adjust_returns_for_slippage(returns, turnover, slippage)
 
+    positions = utils.check_intraday(estimate_intraday, returns,
+                                     positions, transactions)
+
     create_returns_tear_sheet(
         returns,
+        positions=positions,
+        transactions=transactions,
         live_start_date=live_start_date,
         cone_std=cone_std,
         benchmark_rets=benchmark_rets,
@@ -175,26 +187,33 @@ def create_full_tear_sheet(returns,
 
     if positions is not None:
         create_position_tear_sheet(returns, positions,
-                                   gross_lev=gross_lev,
                                    hide_positions=hide_positions,
                                    set_context=set_context,
-                                   sector_mappings=sector_mappings)
+                                   sector_mappings=sector_mappings,
+                                   estimate_intraday=False)
 
         if transactions is not None:
             create_txn_tear_sheet(returns, positions, transactions,
                                   unadjusted_returns=unadjusted_returns,
+                                  estimate_intraday=False,
                                   set_context=set_context)
             if round_trips:
                 create_round_trip_tear_sheet(
                     returns=returns,
                     positions=positions,
                     transactions=transactions,
-                    sector_mappings=sector_mappings)
+                    sector_mappings=sector_mappings,
+                    estimate_intraday=False)
 
             if market_data is not None:
                 create_capacity_tear_sheet(returns, positions, transactions,
                                            market_data, daily_vol_limit=0.2,
-                                           last_n_days=125)
+                                           last_n_days=125,
+                                           estimate_intraday=False)
+
+        if style_factor_panel is not None:
+            create_risk_tear_sheet(positions, style_factor_panel, sectors,
+                                   caps, shares_held, volumes, percentile)
 
     if bayesian:
         create_bayesian_tear_sheet(returns,
@@ -203,10 +222,182 @@ def create_full_tear_sheet(returns,
                                    set_context=set_context)
 
 
-    
+def create_simple_tear_sheet(returns,
+                             positions=None,
+                             transactions=None,
+                             benchmark_rets=None,
+                             slippage=None,
+                             estimate_intraday='infer',
+                             live_start_date=None):
+    """
+    Simpler version of create_full_tear_sheet; generates summary performance
+    statistics and important plots as a single image.
+
+    - Plots: cumulative returns, rolling beta, rolling Sharpe, underwater,
+        exposure, top 10 holdings, total holdings, long/short holdings,
+        daily turnover, transaction time distribution.
+    - Never accept market_data input (market_data = None)
+    - Never accept sector_mappings input (sector_mappings = None)
+    - Never attempt to infer intraday strategy (estimate_intraday = False)
+    - Never perform bootstrap analysis (bootstrap = False)
+    - Never hide posistions on top 10 holdings plot (hide_positions = False)
+    - Always use default cone_std (cone_std = (1.0, 1.5, 2.0))
+
+    Parameters
+    ----------
+    returns : pd.Series
+        Daily returns of the strategy, noncumulative.
+         - Time series with decimal returns.
+         - Example:
+            2015-07-16    -0.012143
+            2015-07-17    0.045350
+            2015-07-20    0.030957
+            2015-07-21    0.004902
+    positions : pd.DataFrame, optional
+        Daily net position values.
+         - Time series of dollar amount invested in each position and cash.
+         - Days where stocks are not held can be represented by 0 or NaN.
+         - Non-working capital is labelled 'cash'
+         - Example:
+            index         'AAPL'         'MSFT'          cash
+            2004-01-09    13939.3800     -14012.9930     711.5585
+            2004-01-12    14492.6300     -14624.8700     27.1821
+            2004-01-13    -13853.2800    13653.6400      -43.6375
+    transactions : pd.DataFrame, optional
+        Executed trade volumes and fill prices.
+        - One row per trade.
+        - Trades on different names that occur at the
+          same time will have identical indicies.
+        - Example:
+            index                  amount   price    symbol
+            2004-01-09 12:18:01    483      324.12   'AAPL'
+            2004-01-09 12:18:01    122      83.10    'MSFT'
+            2004-01-13 14:12:23    -75      340.43   'AAPL'
+    benchmark_rets : pd.Series, optional
+        Daily returns of the benchmark, noncumulative. Defaults to SPY.
+    slippage : int/float, optional
+        Basis points of slippage to apply to returns before generating
+        tearsheet stats and plots.
+        If a value is provided, slippage parameter sweep
+        plots will be generated from the unadjusted returns.
+        Transactions and positions must also be passed.
+        - See txn.adjust_returns_for_slippage for more details.
+    live_start_date : datetime, optional
+        The point in time when the strategy began live trading,
+        after its backtest period. This datetime should be normalized.
+    """
+
+    positions = utils.check_intraday(estimate_intraday, returns,
+                                     positions, transactions)
+
+    if benchmark_rets is None:
+        benchmark_rets = utils.get_symbol_rets('SPY')
+
+    if (slippage is not None) and (transactions is not None):
+        turnover = txn.get_turnover(positions, transactions,
+                                    period=None, average=False)
+        returns = txn.adjust_returns_for_slippage(returns, turnover, slippage)
+
+    if (positions is not None) and (transactions is not None):
+        vertical_sections = 11
+    elif positions is not None:
+        vertical_sections = 9
+    else:
+        vertical_sections = 5
+
+    # Plot simple returns tear sheet
+    returns = returns[returns.index > benchmark_rets.index[0]]
+
+    print("Entire data start date: %s" % returns.index[0].strftime('%Y-%m-%d'))
+    print("Entire data end date: %s" % returns.index[-1].strftime('%Y-%m-%d'))
+    plotting.show_perf_stats(returns,
+                             benchmark_rets,
+                             positions=positions,
+                             transactions=transactions,
+                             live_start_date=live_start_date)
+
+    if returns.index[0] < benchmark_rets.index[0]:
+        returns = returns[returns.index > benchmark_rets.index[0]]
+
+    if live_start_date is not None:
+        vertical_sections += 1
+        live_start_date = utils.get_utc_timestamp(live_start_date)
+
+    fig = plt.figure(figsize=(14, vertical_sections * 6))
+    gs = gridspec.GridSpec(vertical_sections, 3, wspace=0.5, hspace=0.5)
+
+    ax_rolling_returns = plt.subplot(gs[:2, :])
+    i = 2
+    ax_rolling_beta = plt.subplot(gs[i, :], sharex=ax_rolling_returns)
+    i += 1
+    ax_rolling_sharpe = plt.subplot(gs[i, :], sharex=ax_rolling_returns)
+    i += 1
+    ax_underwater = plt.subplot(gs[i, :], sharex=ax_rolling_returns)
+    i += 1
+
+    plotting.plot_rolling_returns(returns,
+                                  factor_returns=benchmark_rets,
+                                  live_start_date=live_start_date,
+                                  cone_std=(1.0, 1.5, 2.0),
+                                  ax=ax_rolling_returns)
+    ax_rolling_returns.set_title('Cumulative returns')
+
+    plotting.plot_rolling_beta(returns, benchmark_rets, ax=ax_rolling_beta)
+
+    plotting.plot_rolling_sharpe(returns, ax=ax_rolling_sharpe)
+
+    plotting.plot_drawdown_underwater(returns, ax=ax_underwater)
+
+    if positions is not None:
+        # Plot simple positions tear sheet
+        ax_exposures = plt.subplot(gs[i, :])
+        i += 1
+        ax_top_positions = plt.subplot(gs[i, :], sharex=ax_exposures)
+        i += 1
+        ax_holdings = plt.subplot(gs[i, :], sharex=ax_exposures)
+        i += 1
+        ax_long_short_holdings = plt.subplot(gs[i, :])
+        i += 1
+
+        positions_alloc = pos.get_percent_alloc(positions)
+
+        plotting.plot_exposures(returns, positions, ax=ax_exposures)
+
+        plotting.show_and_plot_top_positions(returns,
+                                             positions_alloc,
+                                             show_and_plot=0,
+                                             hide_positions=False,
+                                             ax=ax_top_positions)
+
+        plotting.plot_holdings(returns, positions_alloc, ax=ax_holdings)
+
+        plotting.plot_long_short_holdings(returns, positions_alloc,
+                                          ax=ax_long_short_holdings)
+
+        if transactions is not None:
+            # Plot simple transactions tear sheet
+            ax_turnover = plt.subplot(gs[i, :])
+            i += 1
+            ax_txn_timings = plt.subplot(gs[i, :])
+            i += 1
+
+            plotting.plot_turnover(returns,
+                                   transactions,
+                                   positions,
+                                   ax=ax_turnover)
+
+            plotting.plot_txn_time_hist(transactions, ax=ax_txn_timings)
+
+    for ax in fig.axes:
+        plt.setp(ax.get_xticklabels(), visible=True)
+
+    plt.show()
+
 
 @plotting_context
-def create_returns_tear_sheet(returns, live_start_date=None,
+def create_returns_tear_sheet(returns, positions=None,
+                              transactions=None,
+                              live_start_date=None,
                               cone_std=(1.0, 1.5, 2.0),
                               benchmark_rets=None,
                               bootstrap=False,
@@ -226,6 +417,9 @@ def create_returns_tear_sheet(returns, live_start_date=None,
     ----------
     returns : pd.Series
         Daily returns of the strategy, noncumulative.
+         - See full explanation in create_full_tear_sheet.
+    positions : pd.DataFrame, optional
+        Daily net position values.
          - See full explanation in create_full_tear_sheet.
     live_start_date : datetime, optional
         The point in time when the strategy began live trading,
@@ -249,24 +443,25 @@ def create_returns_tear_sheet(returns, live_start_date=None,
 
     if benchmark_rets is None:
         benchmark_rets = utils.get_symbol_rets('SPY')
-        # If the strategy's history is longer than the benchmark's, limit
-        # strategy
-        if returns.index[0] < benchmark_rets.index[0]:
-            returns = returns[returns.index > benchmark_rets.index[0]]
 
-    df_cum_rets = timeseries.cum_returns(returns, starting_value=1)
-    print("Entire data start date: " + str(df_cum_rets
-                                           .index[0].strftime('%Y-%m-%d')))
-    print("Entire data end date: " + str(df_cum_rets
-                                         .index[-1].strftime('%Y-%m-%d')))
+    returns = returns[returns.index > benchmark_rets.index[0]]
 
-    print('\n')
+    print("Entire data start date: %s" % returns.index[0].strftime('%Y-%m-%d'))
+    print("Entire data end date: %s" % returns.index[-1].strftime('%Y-%m-%d'))
 
     plotting.show_perf_stats(returns, benchmark_rets,
+                             positions=positions,
+                             transactions=transactions,
                              bootstrap=bootstrap,
                              live_start_date=live_start_date)
 
-    vertical_sections = 12
+    plotting.show_worst_drawdown_periods(returns)
+
+    # If the strategy's history is longer than the benchmark's, limit strategy
+    if returns.index[0] < benchmark_rets.index[0]:
+        returns = returns[returns.index > benchmark_rets.index[0]]
+
+    vertical_sections = 13
 
     if live_start_date is not None:
         vertical_sections += 1
@@ -291,6 +486,8 @@ def create_returns_tear_sheet(returns, live_start_date=None,
     i += 1
     ax_rolling_beta = plt.subplot(gs[i, :], sharex=ax_rolling_returns)
     i += 1
+    ax_rolling_volatility = plt.subplot(gs[i, :], sharex=ax_rolling_returns)
+    i += 1
     ax_rolling_sharpe = plt.subplot(gs[i, :], sharex=ax_rolling_returns)
     i += 1
     ax_rolling_risk = plt.subplot(gs[i, :], sharex=ax_rolling_returns)
@@ -313,7 +510,7 @@ def create_returns_tear_sheet(returns, live_start_date=None,
         cone_std=cone_std,
         ax=ax_rolling_returns)
     ax_rolling_returns.set_title(
-        'Cumulative Returns')
+        'Cumulative returns')
 
     plotting.plot_rolling_returns(
         returns,
@@ -324,7 +521,7 @@ def create_returns_tear_sheet(returns, live_start_date=None,
         legend_loc=None,
         ax=ax_rolling_returns_vol_match)
     ax_rolling_returns_vol_match.set_title(
-        'Cumulative returns volatility matched to benchmark.')
+        'Cumulative returns volatility matched to benchmark')
 
     plotting.plot_rolling_returns(
         returns,
@@ -334,7 +531,7 @@ def create_returns_tear_sheet(returns, live_start_date=None,
         cone_std=cone_std,
         ax=ax_rolling_returns_log)
     ax_rolling_returns_log.set_title(
-        'Cumulative Returns on logarithmic scale')
+        'Cumulative returns on logarithmic scale')
 
     plotting.plot_returns(
         returns,
@@ -346,6 +543,9 @@ def create_returns_tear_sheet(returns, live_start_date=None,
 
     plotting.plot_rolling_beta(
         returns, benchmark_rets, ax=ax_rolling_beta)
+
+    plotting.plot_rolling_volatility(
+        returns, factor_returns=benchmark_rets, ax=ax_rolling_volatility)
 
     plotting.plot_rolling_sharpe(
         returns, ax=ax_rolling_sharpe)
@@ -360,22 +560,13 @@ def create_returns_tear_sheet(returns, live_start_date=None,
     plotting.plot_drawdown_underwater(
         returns=returns, ax=ax_underwater)
 
-    plotting.show_worst_drawdown_periods(returns)
-
-    df_weekly = timeseries.aggregate_returns(returns, 'weekly')
-    df_monthly = timeseries.aggregate_returns(returns, 'monthly')
-
-    print('\n')
-    plotting.show_return_range(returns, df_weekly)
-
     plotting.plot_monthly_returns_heatmap(returns, ax=ax_monthly_heatmap)
     plotting.plot_annual_returns(returns, ax=ax_annual_returns)
     plotting.plot_monthly_returns_dist(returns, ax=ax_monthly_dist)
 
     plotting.plot_return_quantiles(
         returns,
-        df_weekly,
-        df_monthly,
+        live_start_date=live_start_date,
         ax=ax_return_quantiles)
 
     if bootstrap:
@@ -392,9 +583,10 @@ def create_returns_tear_sheet(returns, live_start_date=None,
 
 
 @plotting_context
-def create_position_tear_sheet(returns, positions, gross_lev=None,
+def create_position_tear_sheet(returns, positions,
                                show_and_plot_top_pos=2, hide_positions=False,
-                               return_fig=False, sector_mappings=None):
+                               return_fig=False, sector_mappings=None,
+                               transactions=None, estimate_intraday='infer'):
     """
     Generate a number of plots for analyzing a
     strategy's positions and holdings.
@@ -410,9 +602,6 @@ def create_position_tear_sheet(returns, positions, gross_lev=None,
     positions : pd.DataFrame
         Daily net position values.
          - See full explanation in create_full_tear_sheet.
-    gross_lev : pd.Series, optional
-        The leverage of a strategy.
-         - See full explanation in create_full_tear_sheet.
     show_and_plot_top_pos : int, optional
         By default, this is 2, and both prints and plots the
         top 10 positions.
@@ -427,11 +616,17 @@ def create_position_tear_sheet(returns, positions, gross_lev=None,
     sector_mappings : dict or pd.Series, optional
         Security identifier to sector mapping.
         Security ids as keys, sectors as values.
+    estimate_intraday: boolean or str, optional
+        Approximate returns for intraday strategies.
+        See description in create_full_tear_sheet.
     """
+
+    positions = utils.check_intraday(estimate_intraday, returns,
+                                     positions, transactions)
 
     if hide_positions:
         show_and_plot_top_pos = 0
-    vertical_sections = 6 if sector_mappings is not None else 5
+    vertical_sections = 7 if sector_mappings is not None else 6
 
     fig = plt.figure(figsize=(14, vertical_sections * 6))
     gs = gridspec.GridSpec(vertical_sections, 3, wspace=0.5, hspace=0.5)
@@ -439,10 +634,12 @@ def create_position_tear_sheet(returns, positions, gross_lev=None,
     ax_top_positions = plt.subplot(gs[1, :], sharex=ax_exposures)
     ax_max_median_pos = plt.subplot(gs[2, :], sharex=ax_exposures)
     ax_holdings = plt.subplot(gs[3, :], sharex=ax_exposures)
+    ax_long_short_holdings = plt.subplot(gs[4, :])
+    ax_gross_leverage = plt.subplot(gs[5, :], sharex=ax_exposures)
 
     positions_alloc = pos.get_percent_alloc(positions)
 
-    plotting.plot_exposures(returns, positions_alloc, ax=ax_exposures)
+    plotting.plot_exposures(returns, positions, ax=ax_exposures)
 
     plotting.show_and_plot_top_positions(
         returns,
@@ -456,13 +653,11 @@ def create_position_tear_sheet(returns, positions, gross_lev=None,
 
     plotting.plot_holdings(returns, positions_alloc, ax=ax_holdings)
 
-    last_pos = 4
-    if gross_lev is not None:
-        ax_gross_leverage = plt.subplot(gs[last_pos, :],
-                                        sharex=ax_exposures)
-        plotting.plot_gross_leverage(returns, gross_lev,
-                                     ax=ax_gross_leverage)
-        last_pos += 1
+    plotting.plot_long_short_holdings(returns, positions_alloc,
+                                      ax=ax_long_short_holdings)
+
+    plotting.plot_gross_leverage(returns, positions,
+                                 ax=ax_gross_leverage)
 
     if sector_mappings is not None:
         sector_exposures = pos.get_sector_exposures(positions,
@@ -470,8 +665,7 @@ def create_position_tear_sheet(returns, positions, gross_lev=None,
         if len(sector_exposures.columns) > 1:
             sector_alloc = pos.get_percent_alloc(sector_exposures)
             sector_alloc = sector_alloc.drop('cash', axis='columns')
-            ax_sector_alloc = plt.subplot(gs[last_pos, :],
-                                          sharex=ax_exposures)
+            ax_sector_alloc = plt.subplot(gs[6, :], sharex=ax_exposures)
             plotting.plot_sector_allocations(returns, sector_alloc,
                                              ax=ax_sector_alloc)
 
@@ -485,7 +679,8 @@ def create_position_tear_sheet(returns, positions, gross_lev=None,
 
 @plotting_context
 def create_txn_tear_sheet(returns, positions, transactions,
-                          unadjusted_returns=None, return_fig=False):
+                          unadjusted_returns=None, estimate_intraday='infer',
+                          return_fig=False):
     """
     Generate a number of plots for analyzing a strategy's transactions.
 
@@ -507,16 +702,24 @@ def create_txn_tear_sheet(returns, positions, transactions,
         Will plot additional swippage sweep analysis.
          - See pyfolio.plotting.plot_swippage_sleep and
            pyfolio.plotting.plot_slippage_sensitivity
+    estimate_intraday: boolean or str, optional
+        Approximate returns for intraday strategies.
+        See description in create_full_tear_sheet.
     return_fig : boolean, optional
         If True, returns the figure that was plotted on.
     """
-    vertical_sections = 5 if unadjusted_returns is not None else 3
+
+    positions = utils.check_intraday(estimate_intraday, returns,
+                                     positions, transactions)
+
+    vertical_sections = 6 if unadjusted_returns is not None else 4
 
     fig = plt.figure(figsize=(14, vertical_sections * 6))
     gs = gridspec.GridSpec(vertical_sections, 3, wspace=0.5, hspace=0.5)
     ax_turnover = plt.subplot(gs[0, :])
     ax_daily_volume = plt.subplot(gs[1, :], sharex=ax_turnover)
     ax_turnover_hist = plt.subplot(gs[2, :])
+    ax_txn_timings = plt.subplot(gs[3, :])
 
     plotting.plot_turnover(
         returns,
@@ -532,14 +735,16 @@ def create_txn_tear_sheet(returns, positions, transactions,
     except ValueError:
         warnings.warn('Unable to generate turnover plot.', UserWarning)
 
+    plotting.plot_txn_time_hist(transactions, ax=ax_txn_timings)
+
     if unadjusted_returns is not None:
-        ax_slippage_sweep = plt.subplot(gs[3, :])
+        ax_slippage_sweep = plt.subplot(gs[4, :])
         plotting.plot_slippage_sweep(unadjusted_returns,
                                      transactions,
                                      positions,
                                      ax=ax_slippage_sweep
                                      )
-        ax_slippage_sensitivity = plt.subplot(gs[4, :])
+        ax_slippage_sensitivity = plt.subplot(gs[5, :])
         plotting.plot_slippage_sensitivity(unadjusted_returns,
                                            transactions,
                                            positions,
@@ -556,7 +761,7 @@ def create_txn_tear_sheet(returns, positions, transactions,
 @plotting_context
 def create_round_trip_tear_sheet(returns, positions, transactions,
                                  sector_mappings=None,
-                                 return_fig=False):
+                                 estimate_intraday='infer', return_fig=False):
     """
     Generate a number of figures and plots describing the duration,
     frequency, and profitability of trade "round trips."
@@ -578,9 +783,15 @@ def create_round_trip_tear_sheet(returns, positions, transactions,
     sector_mappings : dict or pd.Series, optional
         Security identifier to sector mapping.
         Security ids as keys, sectors as values.
+    estimate_intraday: boolean or str, optional
+        Approximate returns for intraday strategies.
+        See description in create_full_tear_sheet.
     return_fig : boolean, optional
         If True, returns the figure that was plotted on.
     """
+
+    positions = utils.check_intraday(estimate_intraday, returns,
+                                     positions, transactions)
 
     transactions_closed = round_trips.add_closing_transactions(positions,
                                                                transactions)
@@ -607,7 +818,6 @@ def create_round_trip_tear_sheet(returns, positions, transactions,
 
     fig = plt.figure(figsize=(14, 3 * 6))
 
-    fig = plt.figure(figsize=(14, 3 * 6))
     gs = gridspec.GridSpec(3, 2, wspace=0.5, hspace=0.5)
 
     ax_trade_lifetimes = plt.subplot(gs[0, :])
@@ -616,7 +826,7 @@ def create_round_trip_tear_sheet(returns, positions, transactions,
     ax_pnl_per_round_trip_dollars = plt.subplot(gs[2, 0])
     ax_pnl_per_round_trip_pct = plt.subplot(gs[2, 1])
 
-    plotting.plot_round_trip_life_times(trades, ax=ax_trade_lifetimes)
+    plotting.plot_round_trip_lifetimes(trades, ax=ax_trade_lifetimes)
 
     plotting.plot_prob_profit_trade(trades, ax=ax_prob_profit_trade)
 
@@ -666,6 +876,7 @@ def create_interesting_times_tear_sheet(
     set_context : boolean, optional
         If True, set default plotting style context.
     """
+
     rets_interesting = timeseries.extract_interesting_date_ranges(returns)
 
     if len(rets_interesting) == 0:
@@ -699,9 +910,9 @@ def create_interesting_times_tear_sheet(
 
         # i=0 -> 0, i=1 -> 0, i=2 -> 1 ;; i=0 -> 0, i=1 -> 1, i=2 -> 0
         ax = plt.subplot(gs[int(i / 2.0), i % 2])
-        timeseries.cum_returns(rets_period).plot(
+        empyrical.cum_returns(rets_period).plot(
             ax=ax, color='forestgreen', label='algo', alpha=0.7, lw=2)
-        timeseries.cum_returns(bmark_interesting[name]).plot(
+        empyrical.cum_returns(bmark_interesting[name]).plot(
             ax=ax, color='gray', label='SPY', alpha=0.6)
         ax.legend(['algo',
                    'SPY'],
@@ -721,7 +932,8 @@ def create_capacity_tear_sheet(returns, positions, transactions,
                                liquidation_daily_vol_limit=0.2,
                                trade_daily_vol_limit=0.05,
                                last_n_days=utils.APPROX_BDAYS_PER_MONTH * 6,
-                               days_to_liquidate_limit=1):
+                               days_to_liquidate_limit=1,
+                               estimate_intraday='infer'):
     """
     Generates a report detailing portfolio size constraints set by
     least liquid tickers. Plots a "capacity sweep," a curve describing
@@ -755,7 +967,13 @@ def create_capacity_tear_sheet(returns, positions, transactions,
         the last N days of the backtest
     days_to_liquidate_limit : integer
         Display all tickers with greater max days to liquidation.
+    estimate_intraday: boolean or str, optional
+        Approximate returns for intraday strategies.
+        See description in create_full_tear_sheet.
     """
+
+    positions = utils.check_intraday(estimate_intraday, returns,
+                                     positions, transactions)
 
     print("Max days to liquidation is computed for each traded name "
           "assuming a 20% limit on daily bar consumption \n"
@@ -768,6 +986,8 @@ def create_capacity_tear_sheet(returns, positions, transactions,
         max_bar_consumption=liquidation_daily_vol_limit,
         capital_base=1e6,
         mean_volume_window=5)
+    max_days_by_ticker.index = (
+        max_days_by_ticker.index.map(utils.format_asset))
 
     print("Whole backtest:")
     utils.print_table(
@@ -780,12 +1000,16 @@ def create_capacity_tear_sheet(returns, positions, transactions,
         capital_base=1e6,
         mean_volume_window=5,
         last_n_days=last_n_days)
+    max_days_by_ticker_lnd.index = (
+        max_days_by_ticker_lnd.index.map(utils.format_asset))
 
     print("Last {} trading days:".format(last_n_days))
     utils.print_table(
         max_days_by_ticker_lnd[max_days_by_ticker_lnd.days_to_liquidate > 1])
 
     llt = capacity.get_low_liquidity_transactions(transactions, market_data)
+    llt.index = llt.index.map(utils.format_asset)
+
     print('Tickers with daily transactions consuming >{}% of daily bar \n'
           'all backtest:'.format(trade_daily_vol_limit * 100))
     utils.print_table(
@@ -840,6 +1064,13 @@ def create_bayesian_tear_sheet(returns, benchmark_rets=None,
     stoch_vol : boolean, optional
         If True, run and plot the stochastic volatility model
     """
+
+    if not have_bayesian:
+        raise NotImplementedError(
+            "Bayesian tear sheet requirements not found.\n"
+            "Run 'pip install pyfolio[bayesian]' to install "
+            "bayesian requirements."
+        )
 
     if live_start_date is None:
         raise NotImplementedError(
@@ -1008,7 +1239,7 @@ def create_bayesian_tear_sheet(returns, benchmark_rets=None,
     if return_fig:
         return fig
 
-    
+
 def get_round_trips(returns,
                     positions=None,
                     transactions=None,
@@ -1051,3 +1282,184 @@ def get_round_trips(returns,
 
     #round_trips.print_round_trip_stats(trades)
     return trades
+
+@plotting_context
+def create_risk_tear_sheet(positions,
+                           style_factor_panel=None,
+                           sectors=None,
+                           caps=None,
+                           shares_held=None,
+                           volumes=None,
+                           percentile=None,
+                           returns=None,
+                           transactions=None,
+                           estimate_intraday='infer',
+                           return_fig=False):
+    '''
+    Creates risk tear sheet: computes and plots style factor exposures, sector
+    exposures, market cap exposures and volume exposures.
+
+    Parameters
+    ----------
+    positions : pd.DataFrame
+        Daily equity positions of algorithm, in dollars.
+        - DataFrame with dates as index, equities as columns
+        - Last column is cash held
+        - Example:
+                     Equity(24   Equity(62
+                       [AAPL])      [ABT])             cash
+        2017-04-03	-108062.40 	  4401.540     2.247757e+07
+        2017-04-04	-108852.00	  4373.820     2.540999e+07
+        2017-04-05	-119968.66	  4336.200     2.839812e+07
+
+    style_factor_panel : pd.Panel
+        Panel where each item is a DataFrame that tabulates style factor per
+        equity per day.
+        - Each item has dates as index, equities as columns
+        - Example item:
+                     Equity(24   Equity(62
+                       [AAPL])      [ABT])
+        2017-04-03	  -0.51284     1.39173
+        2017-04-04	  -0.73381     0.98149
+        2017-04-05	  -0.90132	   1.13981
+
+    sector : pd.DataFrame
+        Daily Morningstar sector code per asset
+        - DataFrame with dates as index and equities as columns
+        - Example:
+                     Equity(24   Equity(62
+                       [AAPL])      [ABT])
+        2017-04-03	     311.0       206.0
+        2017-04-04	     311.0       206.0
+        2017-04-05	     311.0	     206.0
+
+    caps : pd.DataFrame
+        Daily market cap per asset
+        - DataFrame with dates as index and equities as columns
+        - Example:
+                          Equity(24        Equity(62
+                            [AAPL])           [ABT])
+        2017-04-03     1.327160e+10     6.402460e+10
+        2017-04-04	   1.329620e+10     6.403694e+10
+        2017-04-05	   1.297464e+10	    6.397187e+10
+
+    shares_held : pd.DataFrame
+        Daily number of shares held by an algorithm.
+        - Example:
+                          Equity(24        Equity(62
+                            [AAPL])           [ABT])
+        2017-04-03             1915            -2595
+        2017-04-04	           1968            -3272
+        2017-04-05	           2104            -3917
+
+    volumes : pd.DataFrame
+        Daily volume per asset
+        - DataFrame with dates as index and equities as columns
+        - Example:
+                          Equity(24        Equity(62
+                            [AAPL])           [ABT])
+        2017-04-03      34940859.00       4665573.80
+        2017-04-04	    35603329.10       4818463.90
+        2017-04-05	    41846731.75	      4129153.10
+
+    percentile : float
+        Percentile to use when computing and plotting volume exposures.
+        - Defaults to 10th percentile
+    '''
+
+    positions = utils.check_intraday(estimate_intraday, returns,
+                                     positions, transactions)
+
+    idx = positions.index & style_factor_panel.iloc[0].index & sectors.index \
+        & caps.index & shares_held.index & volumes.index
+    positions = positions.loc[idx]
+
+    vertical_sections = 0
+    if style_factor_panel is not None:
+        vertical_sections += len(style_factor_panel.items)
+        new_style_dict = {}
+        for item in style_factor_panel.items:
+            new_style_dict.update({item:
+                                   style_factor_panel.loc[item].loc[idx]})
+        style_factor_panel = pd.Panel()
+        style_factor_panel = style_factor_panel.from_dict(new_style_dict)
+    if sectors is not None:
+        vertical_sections += 4
+        sectors = sectors.loc[idx]
+    if caps is not None:
+        vertical_sections += 4
+        caps = caps.loc[idx]
+    if (shares_held is not None) & (volumes is not None) \
+                                 & (percentile is not None):
+        vertical_sections += 3
+        shares_held = shares_held.loc[idx]
+        volumes = volumes.loc[idx]
+
+    if percentile is None:
+        percentile = 0.1
+
+    fig = plt.figure(figsize=[14, vertical_sections * 6])
+    gs = gridspec.GridSpec(vertical_sections, 3, wspace=0.5, hspace=0.5)
+
+    if style_factor_panel is not None:
+        style_axes = []
+        style_axes.append(plt.subplot(gs[0, :]))
+        for i in range(1, len(style_factor_panel.items)):
+            style_axes.append(plt.subplot(gs[i, :], sharex=style_axes[0]))
+
+        j = 0
+        for name, df in style_factor_panel.iteritems():
+            sfe = risk.compute_style_factor_exposures(positions, df)
+            risk.plot_style_factor_exposures(sfe, name, style_axes[j])
+            j += 1
+
+    if sectors is not None:
+        i += 1
+        ax_sector_longshort = plt.subplot(gs[i:i+2, :], sharex=style_axes[0])
+        i += 2
+        ax_sector_gross = plt.subplot(gs[i, :], sharex=style_axes[0])
+        i += 1
+        ax_sector_net = plt.subplot(gs[i, :], sharex=style_axes[0])
+        long_exposures, short_exposures, gross_exposures, net_exposures \
+            = risk.compute_sector_exposures(positions, sectors)
+        risk.plot_sector_exposures_longshort(long_exposures, short_exposures,
+                                             ax=ax_sector_longshort)
+        risk.plot_sector_exposures_gross(gross_exposures, ax=ax_sector_gross)
+        risk.plot_sector_exposures_net(net_exposures, ax=ax_sector_net)
+
+    if caps is not None:
+        i += 1
+        ax_cap_longshort = plt.subplot(gs[i:i+2, :], sharex=style_axes[0])
+        i += 2
+        ax_cap_gross = plt.subplot(gs[i, :], sharex=style_axes[0])
+        i += 1
+        ax_cap_net = plt.subplot(gs[i, :], sharex=style_axes[0])
+        long_exposures, short_exposures, gross_exposures, net_exposures \
+            = risk.compute_cap_exposures(positions, caps)
+        risk.plot_cap_exposures_longshort(long_exposures, short_exposures,
+                                          ax_cap_longshort)
+        risk.plot_cap_exposures_gross(gross_exposures, ax_cap_gross)
+        risk.plot_cap_exposures_net(net_exposures, ax_cap_net)
+
+    if volumes is not None:
+        i += 1
+        ax_vol_longshort = plt.subplot(gs[i:i+2, :], sharex=style_axes[0])
+        i += 2
+        ax_vol_gross = plt.subplot(gs[i, :], sharex=style_axes[0])
+        longed_threshold, shorted_threshold, grossed_threshold \
+            = risk.compute_volume_exposures(positions, volumes, percentile)
+        risk.plot_volume_exposures_longshort(longed_threshold,
+                                             shorted_threshold, percentile,
+                                             ax_vol_longshort)
+        risk.plot_volume_exposures_gross(grossed_threshold, percentile,
+                                         ax_vol_gross)
+
+    plt.show()
+
+    for ax in fig.axes:
+        plt.setp(ax.get_xticklabels(), visible=True)
+
+    plt.show()
+    if return_fig:
+        return fig
+>>>>>>> ab60891e16c7feb48bf1755232f06ae8ab8116ab

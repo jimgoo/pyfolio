@@ -2,7 +2,7 @@ from __future__ import division
 import pandas as pd
 import numpy as np
 from . import pos
-from . import timeseries
+import empyrical
 
 
 def daily_txns_with_bar_data(transactions, market_data):
@@ -27,6 +27,7 @@ def daily_txns_with_bar_data(transactions, market_data):
         price and volume columns for close price and daily volume for
         the corresponding ticker, respectively.
     """
+
     transactions.index.name = 'date'
     txn_daily = pd.DataFrame(transactions.assign(
         amount=abs(transactions.amount)).groupby(
@@ -43,7 +44,8 @@ def days_to_liquidate_positions(positions, market_data,
                                 max_bar_consumption=0.2,
                                 capital_base=1e6,
                                 mean_volume_window=5):
-    """Compute the number of days that would have been required
+    """
+    Compute the number of days that would have been required
     to fully liquidate each position on each day based on the
     trailing n day mean daily bar volume and a limit on the proportion
     of a daily bar that we are allowed to consume.
@@ -77,11 +79,11 @@ def days_to_liquidate_positions(positions, market_data,
     days_to_liquidate : pd.DataFrame
         Number of days required to fully liquidate daily positions.
         Datetime index, symbols as columns.
-
     """
 
     DV = market_data['volume'] * market_data['price']
-    roll_mean_dv = pd.rolling_mean(DV, mean_volume_window).shift()
+    roll_mean_dv = DV.rolling(window=mean_volume_window,
+                              center=False).mean().shift()
     roll_mean_dv = roll_mean_dv.replace(0, np.nan)
 
     positions_alloc = pos.get_percent_alloc(positions)
@@ -128,7 +130,6 @@ def get_max_days_to_liquidate_by_ticker(positions, market_data,
         Max Number of days required to fully liquidate each traded name.
         Index of symbols. Columns for days_to_liquidate and the corresponding
         date and position_alloc on that day.
-
     """
 
     dtlp = days_to_liquidate_positions(positions, market_data,
@@ -148,7 +149,7 @@ def get_max_days_to_liquidate_by_ticker(positions, market_data,
     liq_desc.index.levels[0].name = 'symbol'
     liq_desc.index.levels[1].name = 'date'
 
-    worst_liq = liq_desc.reset_index().sort(
+    worst_liq = liq_desc.reset_index().sort_values(
         'days_to_liquidate', ascending=False).groupby('symbol').first()
 
     return worst_liq
@@ -171,8 +172,8 @@ def get_low_liquidity_transactions(transactions, market_data,
         the passed positions DataFrame (same dates and symbols).
     last_n_days : integer
         Compute for only the last n days of the passed backtest data.
-
     """
+
     txn_daily_w_bar = daily_txns_with_bar_data(transactions, market_data)
     txn_daily_w_bar.index.name = 'date'
     txn_daily_w_bar = txn_daily_w_bar.reset_index()
@@ -184,7 +185,7 @@ def get_low_liquidity_transactions(transactions, market_data,
     bar_consumption = txn_daily_w_bar.assign(
         max_pct_bar_consumed=(
             txn_daily_w_bar.amount/txn_daily_w_bar.volume)*100
-    ).sort('max_pct_bar_consumed', ascending=False)
+    ).sort_values('max_pct_bar_consumed', ascending=False)
     max_bar_consumption = bar_consumption.groupby('symbol').first()
 
     return max_bar_consumption[['date', 'max_pct_bar_consumed']]
@@ -218,6 +219,7 @@ def apply_slippage_penalty(returns, txn_daily, simulate_starting_capital,
     adj_returns : pd.Series
         Slippage penalty adjusted daily returns.
     """
+
     mult = simulate_starting_capital / backtest_starting_capital
     simulate_traded_shares = abs(mult * txn_daily.amount)
     simulate_traded_dollars = txn_daily.price * simulate_traded_shares
@@ -226,14 +228,14 @@ def apply_slippage_penalty(returns, txn_daily, simulate_starting_capital,
     penalties = simulate_pct_volume_used**2 \
         * impact * simulate_traded_dollars
 
-    daily_penalty = penalties.resample('D', how='sum')
+    daily_penalty = penalties.resample('D').sum()
     daily_penalty = daily_penalty.reindex(returns.index).fillna(0)
 
     # Since we are scaling the numerator of the penalties linearly
     # by capital base, it makes the most sense to scale the denominator
     # similarly. In other words, since we aren't applying compounding to
     # simulate_traded_shares, we shouldn't apply compounding to pv.
-    portfolio_value = timeseries.cum_returns(
+    portfolio_value = empyrical.cum_returns(
         returns, starting_value=backtest_starting_capital) * mult
 
     adj_returns = returns - (daily_penalty / portfolio_value)

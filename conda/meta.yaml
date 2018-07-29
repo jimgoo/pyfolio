@@ -1,11 +1,11 @@
 package:
   name: pyfolio
-  version: "0.5.0"
+  version: "0.6.0"
 
 source:
-  fn: pyfolio-0.5.0.tar.gz
-  url: https://pypi.python.org/packages/e2/58/bbf223dc75903ebb7f8bc4e1d841a873d7f90ba25dd6bd9afa70b78f5d72/pyfolio-0.5.0.tar.gz
-  md5: 211f85b096886f62935fda615d3d6982
+  fn: pyfolio-0.6.0.tar.gz
+  url: https://pypi.python.org/packages/74/b6/bd9064f071ab71312256dc0dcf792440f2e41a66f6736bd2aa90ba965fb6/pyfolio-0.6.0.tar.gz#md5=f3f02df1c1b77209eb33c64e34f00031
+  md5: f3f02df1c1b77209eb33c64e34f00031
 
 build:
   noarch_python: True
@@ -17,20 +17,15 @@ requirements:
 
   run:
     - python
-    - funcsigs >=0.4
     - matplotlib >=1.4.0
-    - mock >=1.1.2
     - numpy >=1.9.1
     - pandas >=0.18.0
-    - pyparsing >=2.0.3
-    - python-dateutil >=2.4.2
     - pytz >=2014.10
-    - scikit-learn >=0.15.0
     - scipy >=0.14.0
     - seaborn >=0.6.0
-    - statsmodels >=0.5.0
     - pandas-datareader >=0.2
     - ipython
+    - empyrical >=0.2.1
 
 test:
   # Python imports

@@ -20,11 +20,12 @@ from os import makedirs, environ
 from os.path import expanduser, join, getmtime, isdir
 import warnings
 
+import numpy as np
 from IPython.display import display
 import pandas as pd
 from pandas.tseries.offsets import BDay
+
 from pandas_datareader import data as web
-import numpy as np
 
 from . import pos
 from . import txn
@@ -70,6 +71,7 @@ def ensure_directory(path):
     """
     Ensure that a directory named "path" exists.
     """
+
     try:
         makedirs(path)
     except OSError as exc:
@@ -85,6 +87,14 @@ def one_dec_places(x, pos):
     return '%.1f' % x
 
 
+def two_dec_places(x, pos):
+    """
+    Adds 1/100th decimal to plot ticks.
+    """
+
+    return '%.2f' % x
+
+
 def percentage(x, pos):
     """
     Adds percentage sign to plot ticks.
@@ -93,17 +103,9 @@ def percentage(x, pos):
     return '%.0f%%' % x
 
 
-def round_two_dec_places(x):
-    """
-    Rounds a number to 1/100th decimal.
-    """
-
-    return np.round(x, 2)
-
-
 def get_utc_timestamp(dt):
     """
-    returns the Timestamp/DatetimeIndex
+    Returns the Timestamp/DatetimeIndex
     with either localized or converted to UTC.
 
     Parameters
@@ -116,6 +118,7 @@ def get_utc_timestamp(dt):
     same type as input
         date(s) converted to UTC
     """
+
     dt = pd.to_datetime(dt)
     try:
         dt = dt.tz_localize('UTC')
@@ -131,8 +134,27 @@ def _1_bday_ago():
     return pd.Timestamp.now().normalize() - _1_bday
 
 
+def format_asset(asset):
+    """
+    If zipline asset objects are used, we want to print them out prettily
+    within the tear sheet. This function should only be applied directly
+    before displaying.
+    """
+
+    try:
+        import zipline.assets
+    except:
+        return asset
+
+    if isinstance(asset, zipline.assets.Asset):
+        return asset.symbol
+    else:
+        return asset
+
+
 def get_returns_cached(filepath, update_func, latest_dt, **kwargs):
-    """Get returns from a cached file if the cache is recent enough,
+    """
+    Get returns from a cached file if the cache is recent enough,
     otherwise, try to retrieve via a provided update function and
     update the cache file.
 
@@ -152,6 +174,7 @@ def get_returns_cached(filepath, update_func, latest_dt, **kwargs):
     pandas.DataFrame
         DataFrame containing returns
     """
+
     update_cache = False
 
     try:
@@ -161,7 +184,13 @@ def get_returns_cached(filepath, update_func, latest_dt, **kwargs):
             raise
         update_cache = True
     else:
-        if pd.Timestamp(mtime, unit='s') < _1_bday_ago():
+
+        file_dt = pd.Timestamp(mtime, unit='s')
+
+        if latest_dt.tzinfo:
+            file_dt = file_dt.tz_localize('utc')
+
+        if file_dt < latest_dt:
             update_cache = True
         else:
             returns = pd.read_csv(filepath, index_col=0, parse_dates=True)
@@ -193,7 +222,8 @@ def get_returns_cached(filepath, update_func, latest_dt, **kwargs):
 
 
 def get_symbol_from_yahoo(symbol, start=None, end=None):
-    """Wrapper for pandas.io.data.get_data_yahoo().
+    """
+    Wrapper for pandas.io.data.get_data_yahoo().
     Retrieves prices for symbol from yahoo and computes returns
     based on adjusted closing prices.
 
@@ -211,8 +241,17 @@ def get_symbol_from_yahoo(symbol, start=None, end=None):
     pandas.DataFrame
         Returns of symbol in requested period.
     """
-    px = web.get_data_yahoo(symbol, start=start, end=end)
-    rets = px[['Adj Close']].pct_change().dropna()
+
+    try:
+        px = web.get_data_yahoo(symbol, start=start, end=end)
+        rets = px[['Adj Close']].pct_change().dropna()
+    except Exception as e:
+        warnings.warn(
+            'Yahoo Finance read failed: {}, falling back to Google'.format(e),
+            UserWarning)
+        px = web.get_data_google(symbol, start=start, end=end)
+        rets = px[['Close']].pct_change().dropna()
+
     rets.index = rets.index.tz_localize("UTC")
     rets.columns = [symbol]
     return rets
@@ -240,6 +279,7 @@ def default_returns_func(symbol, start=None, end=None):
         Daily returns for the symbol.
          - See full explanation in tears.create_full_tear_sheet (returns).
     """
+
     if start is None:
         start = '1/1/1970'
     if end is None:
@@ -264,7 +304,8 @@ def default_returns_func(symbol, start=None, end=None):
 
 
 def vectorize(func):
-    """Decorator so that functions can be written to work on Series but
+    """
+    Decorator so that functions can be written to work on Series but
     may still be called with DataFrames.
     """
 
@@ -278,13 +319,15 @@ def vectorize(func):
 
 
 def get_fama_french():
-    """Retrieve Fama-French factors via pandas-datareader
+    """
+    Retrieve Fama-French factors via pandas-datareader
 
     Returns
     -------
     pandas.DataFrame
         Percent change of Fama-French factors
     """
+
     start = '1/1/1970'
     research_factors = web.DataReader('F-F_Research_Data_Factors_daily',
                                       'famafrench', start=start)[0]
@@ -299,7 +342,7 @@ def get_fama_french():
 
 def load_portfolio_risk_factors(filepath_prefix=None, start=None, end=None):
     """
-    Loads risk factors Mkt-Rf, SMB, HML, Rf, and UMD.
+    Load risk factors Mkt-Rf, SMB, HML, Rf, and UMD.
 
     Data is stored in HDF5 file. If the data is more than 2
     days old, redownload from Dartmouth.
@@ -309,6 +352,7 @@ def load_portfolio_risk_factors(filepath_prefix=None, start=None, end=None):
     five_factors : pd.DataFrame
         Risk factors timeseries.
     """
+
     if start is None:
         start = '1/1/1970'
     if end is None:
@@ -328,7 +372,8 @@ def load_portfolio_risk_factors(filepath_prefix=None, start=None, end=None):
 
 
 def get_treasury_yield(start=None, end=None, period='3MO'):
-    """Load treasury yields from FRED.
+    """
+    Load treasury yields from FRED.
 
     Parameters
     ----------
@@ -346,6 +391,7 @@ def get_treasury_yield(start=None, end=None, period='3MO'):
     pd.Series
         Annual treasury yield for every day.
     """
+
     if start is None:
         start = '1/1/1970'
     if end is None:
@@ -360,7 +406,8 @@ def get_treasury_yield(start=None, end=None, period='3MO'):
 
 
 def extract_rets_pos_txn_from_zipline(backtest):
-    """Extract returns, positions, transactions and leverage from the
+    """
+    Extract returns, positions, transactions and leverage from the
     backtest data structure returned by zipline.TradingAlgorithm.run().
 
     The returned data structures are in a format compatible with the
@@ -383,26 +430,21 @@ def extract_rets_pos_txn_from_zipline(backtest):
     transactions : pd.DataFrame
         Prices and amounts of executed trades. One row per trade.
          - See full explanation in tears.create_full_tear_sheet.
-    gross_lev : pd.Series, optional
-        The leverage of a strategy.
-         - See full explanation in tears.create_full_tear_sheet.
 
 
     Example (on the Quantopian research platform)
     ---------------------------------------------
     >>> backtest = my_algo.run()
-    >>> returns, positions, transactions, gross_lev =
+    >>> returns, positions, transactions =
     >>>     pyfolio.utils.extract_rets_pos_txn_from_zipline(backtest)
     >>> pyfolio.tears.create_full_tear_sheet(returns,
-    >>>     positions, transactions, gross_lev=gross_lev)
-
+    >>>     positions, transactions)
     """
 
     backtest.index = backtest.index.normalize()
     if backtest.index.tzinfo is None:
         backtest.index = backtest.index.tz_localize('UTC')
     returns = backtest.returns
-    gross_lev = backtest.gross_leverage
     raw_positions = []
     for dt, pos_row in backtest.positions.iteritems():
         df = pd.DataFrame(pos_row)
@@ -416,7 +458,7 @@ def extract_rets_pos_txn_from_zipline(backtest):
     if transactions.index.tzinfo is None:
         transactions.index = transactions.index.tz_localize('utc')
 
-    return returns, positions, transactions, gross_lev
+    return returns, positions, transactions
 
 
 # Settings dict to store functions/values that may
@@ -445,6 +487,7 @@ def register_return_func(func):
     -------
     None
     """
+
     SETTINGS['returns_func'] = func
 
 
@@ -470,13 +513,15 @@ def get_symbol_rets(symbol, start=None, end=None):
     pandas.Series
         Returned by the current 'returns_func'
     """
+
     return SETTINGS['returns_func'](symbol,
                                     start=start,
                                     end=end)
 
 
 def print_table(table, name=None, fmt=None):
-    """Pretty print a pandas DataFrame.
+    """
+    Pretty print a pandas DataFrame.
 
     Uses HTML output if running inside Jupyter Notebook, otherwise
     formatted text output.
@@ -491,8 +536,8 @@ def print_table(table, name=None, fmt=None):
         Formatter to use for displaying table elements.
         E.g. '{0:.2f}%' for displaying 100 as '100.00%'.
         Restores original setting after displaying.
-
     """
+
     if isinstance(table, pd.Series):
         table = pd.DataFrame(table)
 
@@ -507,3 +552,179 @@ def print_table(table, name=None, fmt=None):
 
     if fmt is not None:
         pd.set_option('display.float_format', prev_option)
+
+
+def standardize_data(x):
+    """
+    Standardize an array with mean and standard deviation.
+
+    Parameters
+    ----------
+    x : np.array
+        Array to standardize.
+
+    Returns
+    -------
+    np.array
+        Standardized array.
+    """
+
+    return (x - np.mean(x)) / np.std(x)
+
+
+def detect_intraday(positions, transactions, threshold=0.25):
+    """
+    Attempt to detect an intraday strategy. Get the number of
+    positions held at the end of the day, and divide that by the
+    number of unique stocks transacted every day. If the average quotient
+    is below a threshold, then an intraday strategy is detected.
+
+    Parameters
+    ----------
+    positions : pd.DataFrame
+        Daily net position values.
+         - See full explanation in create_full_tear_sheet.
+    transactions : pd.DataFrame
+        Prices and amounts of executed trades. One row per trade.
+         - See full explanation in create_full_tear_sheet.
+
+    Returns
+    -------
+    boolean
+        True if an intraday strategy is detected.
+    """
+
+    daily_txn = transactions.copy()
+    daily_txn.index = daily_txn.index.date
+    txn_count = daily_txn.groupby(level=0).symbol.nunique().sum()
+    daily_pos = positions.drop('cash', axis=1).replace(0, np.nan)
+    return daily_pos.count(axis=1).sum() / txn_count < threshold
+
+
+def check_intraday(estimate, returns, positions, transactions):
+    """
+    Logic for checking if a strategy is intraday and processing it.
+
+    Parameters
+    ----------
+    estimate: boolean or str, optional
+        Approximate returns for intraday strategies.
+        See description in tears.create_full_tear_sheet.
+    returns : pd.Series
+        Daily returns of the strategy, noncumulative.
+         - See full explanation in create_full_tear_sheet.
+    positions : pd.DataFrame
+        Daily net position values.
+         - See full explanation in create_full_tear_sheet.
+    transactions : pd.DataFrame
+        Prices and amounts of executed trades. One row per trade.
+         - See full explanation in create_full_tear_sheet.
+
+    Returns
+    -------
+    pd.DataFrame
+        Daily net position values, adjusted for intraday movement.
+    """
+
+    if estimate == 'infer':
+        if positions is not None and transactions is not None:
+            if detect_intraday(positions, transactions):
+                warnings.warn('Detected intraday strategy; inferring positi' +
+                              'ons from transactions. Set estimate_intraday' +
+                              '=False to disable.')
+                return estimate_intraday(returns, positions, transactions)
+            else:
+                return positions
+        else:
+            return positions
+
+    elif estimate:
+        if positions is not None and transactions is not None:
+            return estimate_intraday(returns, positions, transactions)
+        else:
+            raise ValueError('Positions and txns needed to estimate intraday')
+    else:
+        return positions
+
+
+def estimate_intraday(returns, positions, transactions, EOD_hour=23):
+    """
+    Intraday strategies will often not hold positions at the day end.
+    This attempts to find the point in the day that best represents
+    the activity of the strategy on that day, and effectively resamples
+    the end-of-day positions with the positions at this point of day.
+    The point of day is found by detecting when our exposure in the
+    market is at its maximum point. Note that this is an estimate.
+
+    Parameters
+    ----------
+    returns : pd.Series
+        Daily returns of the strategy, noncumulative.
+         - See full explanation in create_full_tear_sheet.
+    positions : pd.DataFrame
+        Daily net position values.
+         - See full explanation in create_full_tear_sheet.
+    transactions : pd.DataFrame
+        Prices and amounts of executed trades. One row per trade.
+         - See full explanation in create_full_tear_sheet.
+
+    Returns
+    -------
+    pd.DataFrame
+        Daily net position values, resampled for intraday behavior.
+    """
+
+    # Construct DataFrame of transaction amounts
+    txn_val = transactions.copy()
+    txn_val.index.names = ['date']
+    txn_val['value'] = txn_val.amount * txn_val.price
+    txn_val = txn_val.reset_index().pivot_table(
+        index='date', values='value',
+        columns='symbol').replace(np.nan, 0)
+
+    # Cumulate transaction amounts each day
+    txn_val['date'] = txn_val.index.date
+    txn_val = txn_val.groupby('date').cumsum()
+
+    # Calculate exposure, then take peak of exposure every day
+    txn_val['exposure'] = txn_val.abs().sum(axis=1)
+    condition = (txn_val['exposure'] == txn_val.groupby(
+            pd.TimeGrouper('24H'))['exposure'].transform(max))
+    txn_val = txn_val[condition].drop('exposure', axis=1)
+
+    # Compute cash delta
+    txn_val['cash'] = -txn_val.sum(axis=1)
+
+    # Shift EOD positions to positions at start of next trading day
+    positions_shifted = positions.copy().shift(1).fillna(0)
+    starting_capital = positions.iloc[0].sum() / (1 + returns[0])
+    positions_shifted.cash[0] = starting_capital
+
+    # Format and add start positions to intraday position changes
+    txn_val.index = txn_val.index.normalize()
+    corrected_positions = positions_shifted.add(txn_val, fill_value=0)
+    corrected_positions.index.name = 'period_close'
+    corrected_positions.columns.name = 'sid'
+
+    return corrected_positions
+
+
+def to_utc(df):
+    """
+    For use in tests; applied UTC timestamp to DataFrame.
+    """
+
+    try:
+        df.index = df.index.tz_localize('UTC')
+    except TypeError:
+        df.index = df.index.tz_convert('UTC')
+
+    return df
+
+
+def to_series(df):
+    """
+    For use in tests; converts DataFrame's first column to Series.
+    """
+
+    return df[df.columns[0]]

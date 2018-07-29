@@ -58,7 +58,8 @@ class RoundTripTestCase(TestCase):
     ])
     def test_groupby_consecutive(self, transactions, expected):
         grouped_txn = _groupby_consecutive(transactions)
-        assert_frame_equal(grouped_txn.sort(axis=1), expected.sort(axis=1))
+        assert_frame_equal(grouped_txn.sort_index(axis='columns'),
+                           expected.sort_index(axis='columns'))
 
     @parameterized.expand([
         # Simple round-trip
@@ -142,8 +143,8 @@ class RoundTripTestCase(TestCase):
         round_trips = extract_round_trips(transactions,
                                           portfolio_value=portfolio_value)
 
-        assert_frame_equal(round_trips.sort(axis=1),
-                           expected.sort(axis=1))
+        assert_frame_equal(round_trips.sort_index(axis='columns'),
+                           expected.sort_index(axis='columns'))
 
     def test_add_closing_trades(self):
         dates = date_range(start='2015-01-01', periods=20)
@@ -176,10 +177,10 @@ class RoundTripTestCase(TestCase):
 
         test_txn = read_csv(gzip.open(
                             __location__ + '/test_data/test_txn.csv.gz'),
-                            index_col=0, parse_dates=0)
+                            index_col=0, parse_dates=True)
         test_pos = read_csv(gzip.open(
                             __location__ + '/test_data/test_pos.csv.gz'),
-                            index_col=0, parse_dates=0)
+                            index_col=0, parse_dates=True)
 
         transactions_closed = add_closing_transactions(test_pos, test_txn)
         transactions_closed['txn_dollars'] = transactions_closed.amount * \

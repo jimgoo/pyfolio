@@ -2,6 +2,56 @@
 
 These are new features and improvements of note in each release.
 
+## v0.7.0 (Jan 28th, 2017)
+
+This is a major release from `0.6.0`, and all users are recommended to upgrade.
+
+### New features
+
+ - Adds a transaction timing plot, which gives insight into the strategies' trade times.
+ - Adds a plot showing the number of longs and shorts held over time.
+ - New round trips plot selects a sample of held positions (16 by default) and shows their round trips. This replaces the old round trip plot, which became unreadable for strategies that traded many positions.
+ - Adds basic capability for analyzing intraday strategies. If a strategy makes a large amount of transactions relative to its end-of-day positions, then pyfolio will attempt to reconstruct the intraday positions, take the point of peak exposure to the market during each day, and plot that data with the positions tear sheet. By default pyfolio will automatically detect this, but the behavior can be changed by passing either `estimate_intraday=True` or `estimate_intraday=False` to the tear sheet functions ([see here](https://github.com/quantopian/pyfolio/blob/master/pyfolio/tears.py#L131)).
+ - Now formats [zipline](https://github.com/quantopian/zipline) assets, displaying their ticker symbol.
+ - Gross leverage is no longer required to be passed, and will now be calculated from the passed positions DataFrame.
+
+### Bugfixes
+
+ - Cone plotting location is now correct.
+ - Adjust scaling of beta and Fama-French plots.
+ - Removed multiple dependencies, some of which were previously unused.
+ - Various text fixes.
+
+## v0.6.0 (Oct 17, 2016)
+
+This is a major new release from `0.5.1`. All users are recommended to upgrade.
+
+### New features
+
+* Computation of performance and risk measures has been split off into [`empyrical`](https://github.com/quantopian/empyrical). This allows [`Zipline`](https://zipline.io) and `pyfolio` to use the same code to calculate its risk statistics. By [Ana Ruelas](https://github.com/ahgnaw) and [Abhi Kalyan](https://github.com/abhijeetkalyan).
+* New multistrike cone which redraws the cone when it crossed its initial bounds [PR310](https://github.com/quantopian/pyfolio/pull/310). By [Ana Ruelas](https://github.com/ahgnaw) and [Abhi Kalyan](https://github.com/abhijeetkalyan).
+
+### Bugfixes
+
+* Can use most recent PyMC3 now.
+* Depends on seaborn 0.7.0 or later now [PR331](https://github.com/quantopian/pyfolio/pull/331).
+* Disable buggy computation of round trips per day and per month [PR339](https://github.com/quantopian/pyfolio/pull/339).
+
+## v0.5.1 (June 10, 2016)
+
+This is a bugfix release from `0.5.0` with limited new functionality. All users are recommended to upgrade.
+
+### New features
+
+* OOS data is now overlaid on top of box plot [PR306](https://github.com/quantopian/pyfolio/pull/306) by [Ana Ruelas](https://github.com/ahgnaw)
+* New logo [PR298](https://github.com/quantopian/pyfolio/pull/298) by [Taso Petridis](https://github.com/tasopetridis) and [Richard Frank](https://github.com/richafrank)
+* Raw returns plot and cumulative log returns plot [PR294](https://github.com/quantopian/pyfolio/pull/294) by [Thomas Wiecki](https://github.com/twiecki)
+* Net exposure line to the long/short exposure plot [PR301](https://github.com/quantopian/pyfolio/pull/301) by [Ana Ruelas](https://github.com/ahgnaw)
+
+### Bugfixes
+
+* Fix drawdown behavior and pandas exception in tear-sheet creation [PR297](https://github.com/quantopian/pyfolio/pull/297) by [Flavio Duarte](https://github.com/flaviodrt)
+
 ## v0.5.0 (April 21, 2016) -- Olympia
 
 This is a major release from `0.4.0` that includes many new analyses and features. We recommend that all users upgrade to this new version. Also update your dependencies, specifically, `pandas>=0.18.0`, `seaborn>=0.6.0` and `zipline>=0.8.4`.

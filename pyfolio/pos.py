@@ -33,37 +33,11 @@ def get_percent_alloc(values):
     allocations : pd.DataFrame
         Positions and their allocations.
     """
+
     return values.divide(
         values.sum(axis='columns'),
         axis='rows'
     )
-
-
-def get_long_short_pos(positions):
-    """
-    Determines the long and short allocations in a portfolio.
-
-    Parameters
-    ----------
-    positions : pd.DataFrame
-        The positions that the strategy takes over time.
-
-    Returns
-    -------
-    df_long_short : pd.DataFrame
-        Long and short allocations as a decimal
-        percentage of the total net liquidation
-    """
-
-    pos_wo_cash = positions.drop('cash', axis=1)
-    longs = pos_wo_cash[pos_wo_cash > 0].sum(axis=1).fillna(0)
-    shorts = pos_wo_cash[pos_wo_cash < 0].abs().sum(axis=1).fillna(0)
-    cash = positions.cash
-    net_liquidation = longs - shorts + cash
-    df_long_short = pd.DataFrame({'long': longs,
-                                  'short': shorts})
-
-    return df_long_short.divide(net_liquidation, axis='index')
 
 
 def get_top_long_short_abs(positions, top=10):
@@ -113,6 +87,7 @@ def get_max_median_position_concentration(positions):
         Columns are max long, max short, median long, and median short
         position concentrations. Rows are timeperiods.
     """
+
     expos = get_percent_alloc(positions)
     expos = expos.drop('cash', axis=1)
 
@@ -129,7 +104,8 @@ def get_max_median_position_concentration(positions):
 
 
 def extract_pos(positions, cash):
-    """Extract position values from backtest object as returned by
+    """
+    Extract position values from backtest object as returned by
     get_backtest() on the Quantopian research platform.
 
     Parameters
@@ -147,6 +123,7 @@ def extract_pos(positions, cash):
         Daily net position values.
          - See full explanation in tears.create_full_tear_sheet.
     """
+
     positions = positions.copy()
     positions['values'] = positions.amount * positions.last_sale_price
     cash.name = 'cash'
@@ -163,6 +140,7 @@ def extract_pos(positions, cash):
 def get_sector_exposures(positions, symbol_sector_map):
     """
     Sum position exposures by sector.
+
     Parameters
     ----------
     positions : pd.DataFrame
@@ -179,6 +157,7 @@ def get_sector_exposures(positions, symbol_sector_map):
             {'AAPL' : 'Technology'
              'MSFT' : 'Technology'
              'CHK' : 'Natural Resources'}
+
     Returns
     -------
     sector_exp : pd.DataFrame
@@ -189,6 +168,7 @@ def get_sector_exposures(positions, symbol_sector_map):
             2004-01-12    -4132.240       142.630             3989.6100
             2004-01-13    -199.640        -100.980            100.0000
     """
+
     cash = positions['cash']
     positions = positions.drop('cash', axis=1)
 
@@ -206,3 +186,31 @@ def get_sector_exposures(positions, symbol_sector_map):
     sector_exp['cash'] = cash
 
     return sector_exp
+
+
+def get_long_short_pos(positions):
+    """
+    Determines the long and short allocations in a portfolio.
+
+    Parameters
+    ----------
+    positions : pd.DataFrame
+        The positions that the strategy takes over time.
+
+    Returns
+    -------
+    df_long_short : pd.DataFrame
+        Long and short allocations as a decimal
+        percentage of the total net liquidation
+    """
+
+    pos_wo_cash = positions.drop('cash', axis=1)
+    longs = pos_wo_cash[pos_wo_cash > 0].sum(axis=1).fillna(0)
+    shorts = pos_wo_cash[pos_wo_cash < 0].sum(axis=1).fillna(0)
+    cash = positions.cash
+    net_liquidation = longs + shorts + cash
+    df_pos = pd.DataFrame({'long': longs.divide(net_liquidation, axis='index'),
+                           'short': shorts.divide(net_liquidation,
+                                                  axis='index')})
+    df_pos['net exposure'] = df_pos['long'] + df_pos['short']
+    return df_pos
