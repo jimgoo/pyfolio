@@ -1462,4 +1462,3 @@ def create_risk_tear_sheet(positions,
     plt.show()
     if return_fig:
         return fig
->>>>>>> ab60891e16c7feb48bf1755232f06ae8ab8116ab

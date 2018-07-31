@@ -242,18 +242,47 @@ def get_symbol_from_yahoo(symbol, start=None, end=None):
         Returns of symbol in requested period.
     """
 
-    try:
-        px = web.get_data_yahoo(symbol, start=start, end=end)
-        rets = px[['Adj Close']].pct_change().dropna()
-    except Exception as e:
-        warnings.warn(
-            'Yahoo Finance read failed: {}, falling back to Google'.format(e),
-            UserWarning)
-        px = web.get_data_google(symbol, start=start, end=end)
-        rets = px[['Close']].pct_change().dropna()
+    # try:
+    #     px = web.get_data_yahoo(symbol, start=start, end=end)
+    #     rets = px[['Adj Close']].pct_change().dropna()
+    # except Exception as e:
+    #     warnings.warn(
+    #         'Yahoo Finance read failed: {}, falling back to Google'.format(e),
+    #         UserWarning)
+    #     px = web.get_data_google(symbol, start=start, end=end)
+    #     rets = px[['Close']].pct_change().dropna()
+    # rets.index = rets.index.tz_localize("UTC")
+    # rets.columns = [symbol]
 
+    print('Getting symbol %s from /media/ssd/etfs-nick/EOD_20180724.h5' % symbol)
+
+    start2 = pd.Timestamp(start)
+    end2 = pd.Timestamp(end)
+
+    df = pd.read_hdf('/media/ssd/etfs-nick/EOD_20180724.h5')
+    px = df[df.symu == symbol].loc[:, ['date', 'adj_close']]
+    px['date'] = pd.to_datetime(px['date'])
+    px = px.set_index('date', drop=True)
+    px = px.sort_index()
+
+    # import ipdb; ipdb.set_trace()
+
+    px = px[(px.index >= start2) & (px.index <= end2)]
+    
+    rets = px.pct_change().dropna()
     rets.index = rets.index.tz_localize("UTC")
     rets.columns = [symbol]
+
+    # px = web.get_data_quandl(symbol, start=start, end=end)
+    # rets = px[['AdjClose']]
+    # rets = rets.shift(-1)
+    # rets.iloc[-1]['AdjClose'] = px.tail(1)['AdjOpen']
+    # rets = rets.shift(1) / rets - 1
+    # rets = rets.dropna()
+    # rets.index = rets.index.to_datetime()
+    # rets.index = rets.index.tz_localize("UTC")
+    # rets.columns = [symbol]
+
     return rets
 
 
